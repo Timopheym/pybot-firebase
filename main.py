@@ -24,9 +24,10 @@ from telegram.ext import (
     MessageHandler,
     Filters,
     ConversationHandler,
-    PicklePersistence,
     CallbackContext,
 )
+
+from ptb_firebase_persistence import FirebasePersistence
 
 
 # Enable logging
@@ -57,6 +58,7 @@ def facts_to_str(user_data: Dict[str, str]) -> str:
 
 def start(update: Update, context: CallbackContext) -> int:
     reply_text = "Hi! My name is Doctor Botter."
+    context.chat_data['started'] = True
     if context.user_data:
         reply_text += (
             f" You already told me your {', '.join(context.user_data.keys())}. Why don't you "
@@ -128,10 +130,13 @@ def done(update: Update, context: CallbackContext) -> int:
     return ConversationHandler.END
 
 
+credentials = {}
+
+
 def main() -> None:
     # Create the Updater and pass it your bot's token.
-    persistence = PicklePersistence(filename='conversationbot')
-    updater = Updater("1110176176:AAH8UZ2UlBx9hz-lzZZm7S_PMRLuNLoQ-kc", persistence=persistence)
+    persistence = FirebasePersistence(database_url='', credentials=credentials)
+    updater = Updater("",  persistence=persistence)
 
     # Get the dispatcher to register handlers
     dispatcher = updater.dispatcher
