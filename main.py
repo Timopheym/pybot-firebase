@@ -29,6 +29,10 @@ from telegram.ext import (
 
 from ptb_firebase_persistence import FirebasePersistence
 
+from dotenv import load_dotenv
+from os import getenv
+import json
+load_dotenv()  # take environment variables from .env.
 
 # Enable logging
 logging.basicConfig(
@@ -37,15 +41,14 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-CHOOSING, TYPING_REPLY, TYPING_CHOICE = range(3)
-
+CHOOSING, TYPING_REPLY_TEXT, TYPING_REPLY_TIME = range(3)
+SET_TASK_TEXT = 'Set task'
+SHOW_MY_TASKS_TEXT = 'Show my tasks'
 reply_keyboard = [
-    ['Age', 'Favourite colour'],
-    ['Number of siblings', 'Something else...'],
-    ['Done'],
+    [SET_TASK_TEXT, SHOW_MY_TASKS_TEXT]
 ]
 markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
-
+updater = None
 
 def facts_to_str(user_data: Dict[str, str]) -> str:
     facts = []
@@ -57,56 +60,73 @@ def facts_to_str(user_data: Dict[str, str]) -> str:
 
 
 def start(update: Update, context: CallbackContext) -> int:
-    reply_text = "Hi! My name is Doctor Botter."
+    reply_text = "Hi! I will help you to not forget things"
     context.chat_data['started'] = True
     if context.user_data:
         reply_text += (
-            f" You already told me your {', '.join(context.user_data.keys())}. Why don't you "
-            f"tell me something more about yourself? Or change anything I already know."
+            f"\nI see we met before already"
         )
     else:
         reply_text += (
-            " I will hold a more complex conversation with you. Why don't you tell me "
-            "something about yourself?"
+            "Nice to get you know"
         )
     update.message.reply_text(reply_text, reply_markup=markup)
 
     return CHOOSING
 
 
-def regular_choice(update: Update, context: CallbackContext) -> int:
-    text = update.message.text.lower()
-    context.user_data['choice'] = text
-    if context.user_data.get(text):
-        reply_text = (
-            f'Your {text}? I already know the following about that: {context.user_data[text]}'
-        )
-    else:
-        reply_text = f'Your {text}? Yes, I would love to hear about that!'
-    update.message.reply_text(reply_text)
-
-    return TYPING_REPLY
+def set_task_choice(update: Update, context: CallbackContext) -> int:
+    update.message.reply_text('What shall I ask you about?')
+    return TYPING_REPLY_TEXT
 
 
-def custom_choice(update: Update, _: CallbackContext) -> int:
+def received_information_text(update: Update, context: CallbackContext) -> int:
+    text = update.message.text
+    context.user_data['text_for_upcoming_task'] = text
     update.message.reply_text(
-        'Alright, please send me the category first, for example "Most impressive skill"'
+        "Ok, I will ask you about:"
+        f"{text}"
+        "\nWhen should I do this?",
     )
 
-    return TYPING_CHOICE
+    return TYPING_REPLY_TIME
 
 
-def received_information(update: Update, context: CallbackContext) -> int:
-    text = update.message.text
-    category = context.user_data['choice']
-    context.user_data[category] = text.lower()
-    del context.user_data['choice']
+def received_information_time(update: Update, context: CallbackContext) -> int:
+    task_time = update.message.text
+    task_text = context.user_data['text_for_upcoming_task']
+    task = {
+        "time": task_time,
+        "text": task_text,
+    }
+    if 'tasks' not in context.user_data:
+        context.user_data['tasks'] = []
+
+    context.user_data['tasks'].append(task)
+
+    def callback_minute(ctx):
+        context.bot.send_message(update.effective_user.id, text=task_text)
+        if 'answers' not in context.user_data:
+            context.user_data['answers'] = []
+
+        context.user_data['tasks'].append({
+            "question": task_text,
+            "answer": "" # How get text here?
+        })
+    #     How to switch state ofr handler
+
+
+    if updater:
+        print('Assign task')
+        updater.job_queue.run_repeating(callback_minute, interval=int(task_time))
+
+
+    del context.user_data['text_for_upcoming_task']
 
     update.message.reply_text(
-        "Neat! Just so you know, this is what you already told me:"
-        f"{facts_to_str(context.user_data)}"
-        "You can tell me more, or change your opinion on "
-        "something.",
+        "Ok, I will ask you about:"
+        f"{task_text} at {task_time}"
+        "Can I do something else for you?",
         reply_markup=markup,
     )
 
@@ -130,13 +150,15 @@ def done(update: Update, context: CallbackContext) -> int:
     return ConversationHandler.END
 
 
-credentials = {}
+with open(getenv('FIREBASE_CREDENTIALS_FILE')) as json_file:
+    credentials = json.load(json_file)
 
 
 def main() -> None:
+    global updater
     # Create the Updater and pass it your bot's token.
-    persistence = FirebasePersistence(database_url='', credentials=credentials)
-    updater = Updater("",  persistence=persistence)
+    persistence = FirebasePersistence(database_url=getenv('FIREBASE_URL'), credentials=credentials)
+    updater = Updater(getenv('TELEGRAM_TOKEN'),  persistence=persistence)
 
     # Get the dispatcher to register handlers
     dispatcher = updater.dispatcher
@@ -146,20 +168,19 @@ def main() -> None:
         entry_points=[CommandHandler('start', start)],
         states={
             CHOOSING: [
-                MessageHandler(
-                    Filters.regex('^(Age|Favourite colour|Number of siblings)$'), regular_choice
-                ),
-                MessageHandler(Filters.regex('^Something else...$'), custom_choice),
+                MessageHandler(Filters.regex(f'^{SET_TASK_TEXT}$'), set_task_choice),
+                # MessageHandler(Filters.regex(f'^{SHOW_MY_TASKS_TEXT}$'), show_tasks_choice),
             ],
-            TYPING_CHOICE: [
-                MessageHandler(
-                    Filters.text & ~(Filters.command | Filters.regex('^Done$')), regular_choice
-                )
-            ],
-            TYPING_REPLY: [
+            TYPING_REPLY_TEXT: [
                 MessageHandler(
                     Filters.text & ~(Filters.command | Filters.regex('^Done$')),
-                    received_information,
+                    received_information_text,
+                    )
+            ],
+            TYPING_REPLY_TIME: [
+                MessageHandler(
+                    Filters.text & ~(Filters.command | Filters.regex('^Done$')),
+                    received_information_time,
                     )
             ],
         },
